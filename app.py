@@ -52,12 +52,10 @@ def get_financial_metrics(ticker_symbol: str, de_type: str) -> tuple[float, floa
         t = yf.Ticker(ticker_symbol)
         info = t.info or {}
         
-        # --- Market Cap Retrieval ---
         market_cap_raw = info.get("marketCap")
         if market_cap_raw is not None:
             market_cap = float(market_cap_raw)
 
-        # --- D/E Ratio Calculation Mode ---
         if de_type == "Market Value D/E":
             total_debt = info.get("totalDebt")
             if total_debt is None:
@@ -69,8 +67,7 @@ def get_financial_metrics(ticker_symbol: str, de_type: str) -> tuple[float, floa
                 
             if total_debt is not None and market_cap > 0:
                 de_ratio = float(total_debt / market_cap)
-                
-        else: # Book Value D/E
+        else:
             d_e_raw = info.get("debtToEquity")
             if d_e_raw is not None and isinstance(d_e_raw, (int, float)):
                 de_ratio = (d_e_raw / 100.0 if d_e_raw > 5 else float(d_e_raw))
@@ -84,7 +81,6 @@ def get_financial_metrics(ticker_symbol: str, de_type: str) -> tuple[float, floa
                             de_ratio = float(total_debt / total_equity)
                 except: pass
 
-        # --- Tax Rate Calculation ---
         try:
             inc = t.income_stmt
             if not inc.empty and "Tax Provision" in inc.index and "Pretax Income" in inc.index:
@@ -112,9 +108,8 @@ def generate_market_excel(
     dash_df: pd.DataFrame,
     industry_df: pd.DataFrame,
     weight_table_df: pd.DataFrame,
-    peer_breakdown_df: pd.DataFrame,
-    global_simple_u_beta: float,
-    global_mc_u_beta: float
+    calc_breakdown_df: pd.DataFrame,
+    peer_detail_data: list
 ) -> bytes:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -258,7 +253,6 @@ def generate_market_excel(
         for c_i in range(1, 12):
             ws_summary.cell(row=s_row, column=c_i).border = BORDER_THIN
 
-    # Native Excel Bar Chart
     chart = BarChart()
     chart.type = "col"
     chart.style = 10
@@ -278,7 +272,7 @@ def generate_market_excel(
     ws_summary.add_chart(chart, "M3")
 
     # ==========================================
-    # NEW: Industry Scenarios Sheet
+    # Industry Scenarios Sheet
     # ==========================================
     ws_ind = wb.create_sheet(title="Industry Scenarios", index=1)
     ws_ind.views.sheetView[0].showGridLines = True
@@ -331,67 +325,45 @@ def generate_market_excel(
         for c_i in range(1, 5):
             ws_ind.cell(row=r_idx, column=c_i).border = BORDER_THIN
 
-    # ==========================================
-    # Table 3: Unlevered Beta Method Breakdown
-    # ==========================================
+    # Table 3: Detailed Calculation Breakdown for Unlevered Betas
     t3_start_row = t2_start_row + len(weight_table_df) + 3
-
-    ws_ind.merge_cells(f"A{t3_start_row-1}:E{t3_start_row-1}")
+    ws_ind.merge_cells(f"A{t3_start_row-1}:C{t3_start_row-1}")
     ws_ind[f"A{t3_start_row-1}"] = "UNLEVERED BETA CALCULATION BREAKDOWN (BY METHOD)"
     ws_ind[f"A{t3_start_row-1}"].font, ws_ind[f"A{t3_start_row-1}"].fill = FONT_TITLE, NAVY_FILL
 
-    # --- 3a: Global-level single-value methods (Calc 1 & Calc 2) ---
-    headers_global = ["Method", "Resulting Unlevered Beta", "Basis"]
-    for col_idx, text in enumerate(headers_global, start=1):
+    headers_calc = ["Method", "Resulting Unlevered Beta", "Basis"]
+    for col_idx, text in enumerate(headers_calc, start=1):
         c = ws_ind.cell(row=t3_start_row, column=col_idx, value=text)
         c.fill, c.font, c.alignment, c.border = HEADER_FILL, FONT_HEADER, ALIGN_CENTER, BORDER_THIN
 
-    global_rows = [
-        ("Global Simple Unlevered Beta (Calc 1)", global_simple_u_beta, "Simple average across all companies (targets + peers)"),
-        ("Global Weighted Unlevered Beta (Calc 2)", global_mc_u_beta, "Market-cap weighted average across all companies"),
-    ]
-    for g_idx, (label, val, basis) in enumerate(global_rows):
-        r_idx = t3_start_row + 1 + g_idx
-        ws_ind.cell(row=r_idx, column=1, value=label).font = FONT_BOLD
-        ws_ind.cell(row=r_idx, column=2, value=val).number_format = "0.000"
-        ws_ind.cell(row=r_idx, column=3, value=basis)
+    for idx, row in calc_breakdown_df.iterrows():
+        r_idx = t3_start_row + 1 + idx
+        ws_ind.cell(row=r_idx, column=1, value=row["Method"]).font = FONT_BOLD
+        ws_ind.cell(row=r_idx, column=2, value=row["Resulting Unlevered Beta"]).number_format = "0.00"
+        ws_ind.cell(row=r_idx, column=3, value=row["Basis"])
         for c_i in range(1, 4):
             ws_ind.cell(row=r_idx, column=c_i).border = BORDER_THIN
 
-    # --- 3b: Peer Weighted Unlevered Beta breakdown (Calc 3), per target ---
-    t3b_start_row = t3_start_row + len(global_rows) + 3
-    ws_ind.merge_cells(f"A{t3b_start_row-1}:E{t3b_start_row-1}")
-    ws_ind[f"A{t3b_start_row-1}"] = "PEER WEIGHTED UNLEVERED BETA (CALC 3) - PER TARGET DETAIL"
-    ws_ind[f"A{t3b_start_row-1}"].font, ws_ind[f"A{t3b_start_row-1}"].fill = FONT_TITLE, NAVY_FILL
+    # Table 4: Peer Weighted Unlevered Beta (Calc 3) - Per Target Detail
+    t4_start_row = t3_start_row + len(calc_breakdown_df) + 3
+    ws_ind.merge_cells(f"A{t4_start_row-1}:E{t4_start_row-1}")
+    ws_ind[f"A{t4_start_row-1}"] = "PEER WEIGHTED UNLEVERED BETA (CALC 3) - PER TARGET DETAIL"
+    ws_ind[f"A{t4_start_row-1}"].font, ws_ind[f"A{t4_start_row-1}"].fill = FONT_TITLE, NAVY_FILL
 
-    headers_peer = ["Target Asset", "Peer Company", "Peer Unlevered Beta", "Peer Market Cap", "Peer Weight in Group (%)"]
-    for col_idx, text in enumerate(headers_peer, start=1):
-        c = ws_ind.cell(row=t3b_start_row, column=col_idx, value=text)
+    headers_peer_detail = ["Target Asset", "Peer Company", "Peer Unlevered Beta", "Peer Market Cap", "Peer Weight in Group (%)"]
+    for col_idx, text in enumerate(headers_peer_detail, start=1):
+        c = ws_ind.cell(row=t4_start_row, column=col_idx, value=text)
         c.fill, c.font, c.alignment, c.border = HEADER_FILL, FONT_HEADER, ALIGN_CENTER, BORDER_THIN
 
-    r_cursor = t3b_start_row + 1
-    if peer_breakdown_df is not None and not peer_breakdown_df.empty:
-        for target_asset, grp in peer_breakdown_df.groupby("Target Asset", sort=False):
-            for row_i, (_, prow) in enumerate(grp.iterrows()):
-                ws_ind.cell(row=r_cursor, column=1, value=target_asset if row_i == 0 else "").font = FONT_BOLD
-                ws_ind.cell(row=r_cursor, column=2, value=prow["Peer Company"])
-                ws_ind.cell(row=r_cursor, column=3, value=prow["Peer Unlevered Beta"]).number_format = "0.000"
-                ws_ind.cell(row=r_cursor, column=4, value=prow["Peer Market Cap"]).number_format = "#,##0"
-                ws_ind.cell(row=r_cursor, column=5, value=prow["Peer Weight (%)"]).number_format = "0.00%"
-                for c_i in range(1, 6):
-                    ws_ind.cell(row=r_cursor, column=c_i).border = BORDER_THIN
-                r_cursor += 1
-            # Summary row showing the resulting peer-weighted unlevered beta for this target
-            match = industry_df.loc[industry_df["Target Asset"] == target_asset, "Calc 3: Peer Weighted Unlevered"]
-            result_val = match.iloc[0] if not match.empty else None
-            ws_ind.cell(row=r_cursor, column=1, value="").border = BORDER_THIN
-            ws_ind.cell(row=r_cursor, column=2, value=f"=> {target_asset} Peer Weighted Unlevered Beta").font = FONT_BOLD
-            result_cell = ws_ind.cell(row=r_cursor, column=3, value=result_val)
-            result_cell.font = FONT_METRIC
-            result_cell.number_format = "0.000"
-            for c_i in range(1, 6):
-                ws_ind.cell(row=r_cursor, column=c_i).border = BORDER_THIN
-            r_cursor += 2
+    for idx, row in peer_detail_data.iterrows():
+        r_idx = t4_start_row + 1 + idx
+        ws_ind.cell(row=r_idx, column=1, value=row["Target Asset"]).font = FONT_BOLD
+        ws_ind.cell(row=r_idx, column=2, value=row["Peer Company"])
+        ws_ind.cell(row=r_idx, column=3, value=row["Peer Unlevered Beta"]).number_format = "0.00"
+        ws_ind.cell(row=r_idx, column=4, value=row["Peer Market Cap"]).number_format = "#,##0"
+        ws_ind.cell(row=r_idx, column=5, value=row["Peer Weight in Group (%)"]).number_format = "0.00%"
+        for c_i in range(1, 6):
+            ws_ind.cell(row=r_idx, column=c_i).border = BORDER_THIN
 
     # ==========================================
     # Correlation Heatmap Sheet
@@ -434,7 +406,6 @@ st.set_page_config(page_title="Beta & Risk Analytics", layout="wide", initial_si
 st.title("📈 Advanced Cost of Capital & Beta Dashboard")
 st.markdown("Analyze market risk, compute unlevered betas, and handle custom competitor peer groups dynamically.")
 
-# --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("Configuration")
 
 mode = st.sidebar.radio(
@@ -463,7 +434,6 @@ with st.sidebar.expander("⚙️ Optional Competitor Mapping (Advanced)", expand
     """)
     custom_peers_str = st.text_area("Competitor Rules", height=120, placeholder="TCS = INFY, WIPRO")
 
-# --- MAIN INPUTS ---
 main_tickers_str = st.text_input("Target Companies (comma-separated)", "TVSMOTOR, HEROMOTOCO, EICHERMOT")
 
 if st.button("Run Financial Analysis", type="primary"):
@@ -503,7 +473,6 @@ if st.button("Run Financial Analysis", type="primary"):
                 if not df.empty:
                     df.index = df.index.tz_localize(None)
                     fetched_data[sym] = df.round(2)
-                    
                     financials_data[sym] = get_financial_metrics(ticker, de_ratio_type)
             except Exception as e:
                 st.warning(f"Failed to fetch {sym}: {e}")
@@ -512,7 +481,6 @@ if st.button("Run Financial Analysis", type="primary"):
             st.error(f"Could not fetch benchmark '{bench_symbol}'. Please verify the ticker.")
             st.stop()
 
-        # STRICT ALIGNMENT: Align trading days across all fetched assets
         common_dates = set(fetched_data[bench_symbol].index)
         for sym in fetched_data:
             common_dates = common_dates.intersection(set(fetched_data[sym].index))
@@ -550,7 +518,6 @@ if st.button("Run Financial Analysis", type="primary"):
                 "beta_l": beta_l, "de": de, "tax": tax, "beta_u": beta_u, "corr": corr, "mc": mc
             }
 
-        # --- CALCULATE 3 NEW INDUSTRY SCENARIOS ---
         valid_companies = [s for s in all_symbols_to_fetch if s in metrics_cache and s != bench_symbol]
         total_mc = 0.0
         if valid_companies:
@@ -563,7 +530,6 @@ if st.button("Run Financial Analysis", type="primary"):
         else:
             global_simple_u_beta, global_mc_u_beta = 1.0, 1.0
 
-        # --- BUILD WEIGHT TABLE DATA ---
         weight_table_data = []
         for c in valid_companies:
             c_mc = metrics_cache[c]["mc"]
@@ -578,20 +544,19 @@ if st.button("Run Financial Analysis", type="primary"):
 
         industry_scenario_data = []
         dashboard_data = []
-        peer_breakdown_data = []
+        calc_breakdown_data = []
+        peer_detail_rows = []
 
         for sym in main_assets:
             if sym not in metrics_cache: continue
             m = metrics_cache[sym]
             de, tax = m["de"], m["tax"]
             
-            # Identify peers for Calc 3
             if sym in comp_map and comp_map[sym]:
                 peers = [p for p in comp_map[sym] if p in metrics_cache]
             else:
-                peers = [p for p in main_assets if p != sym and p in metrics_cache]
+                peers = [p for p in all_symbols_to_fetch if p in metrics_cache and p != bench_symbol]
             
-            # Base Dashboard specific peer logic (Simple avg)
             peer_u_beta = np.mean([metrics_cache[p]["beta_u"] for p in peers]) if peers else np.nan
             peer_rel_beta = peer_u_beta * (1 + (1 - m["tax"]) * m["de"]) if not np.isnan(peer_u_beta) else np.nan
 
@@ -607,31 +572,35 @@ if st.button("Run Financial Analysis", type="primary"):
                 "Correlation": m["corr"]
             })
 
-            # --- INDUSTRY SCENARIOS LOGIC ---
             c1_rel = global_simple_u_beta * (1 + (1 - tax) * de)
             c2_rel = global_mc_u_beta * (1 + (1 - tax) * de)
 
-            # Calc 3: Market Cap Weighted Average of *Target's Competitors*
             c3_unlev = np.nan
             c3_rel = np.nan
             if peers:
                 peer_total_mc = sum(metrics_cache[p]["mc"] for p in peers)
                 if peer_total_mc > 0:
                     c3_unlev = sum(metrics_cache[p]["beta_u"] * metrics_cache[p]["mc"] for p in peers) / peer_total_mc
+                    for p in peers:
+                        p_weight = metrics_cache[p]["mc"] / peer_total_mc
+                        peer_detail_rows.append({
+                            "Target Asset": sym,
+                            "Peer Company": p,
+                            "Peer Unlevered Beta": metrics_cache[p]["beta_u"],
+                            "Peer Market Cap": metrics_cache[p]["mc"],
+                            "Peer Weight in Group (%)": p_weight
+                        })
                 else:
                     c3_unlev = peer_u_beta 
+                    for p in peers:
+                        peer_detail_rows.append({
+                            "Target Asset": sym,
+                            "Peer Company": p,
+                            "Peer Unlevered Beta": metrics_cache[p]["beta_u"],
+                            "Peer Market Cap": metrics_cache[p]["mc"],
+                            "Peer Weight in Group (%)": 1.0 / len(peers)
+                        })
                 c3_rel = c3_unlev * (1 + (1 - tax) * de)
-
-                for p in peers:
-                    p_mc = metrics_cache[p]["mc"]
-                    p_weight = (p_mc / peer_total_mc) if peer_total_mc > 0 else (1.0 / len(peers))
-                    peer_breakdown_data.append({
-                        "Target Asset": sym,
-                        "Peer Company": p,
-                        "Peer Unlevered Beta": metrics_cache[p]["beta_u"],
-                        "Peer Market Cap": p_mc,
-                        "Peer Weight (%)": p_weight
-                    })
 
             industry_scenario_data.append({
                 "Target Asset": sym,
@@ -643,16 +612,27 @@ if st.button("Run Financial Analysis", type="primary"):
                 "Calc 3: Target Relevered": c3_rel
             })
 
+        calc_breakdown_data.append({
+            "Method": "Global Simple Unlevered Beta (Calc 1)",
+            "Resulting Unlevered Beta": global_simple_u_beta,
+            "Basis": "Simple average across all companies (targets + peers)"
+        })
+        calc_breakdown_data.append({
+            "Method": "Global Weighted Unlevered Beta (Calc 2)",
+            "Resulting Unlevered Beta": global_mc_u_beta,
+            "Basis": "Market-cap weighted average across all companies"
+        })
+
     dash_df = pd.DataFrame(dashboard_data)
     industry_df = pd.DataFrame(industry_scenario_data)
-    peer_breakdown_df = pd.DataFrame(peer_breakdown_data)
+    calc_breakdown_df = pd.DataFrame(calc_breakdown_data)
+    peer_detail_df = pd.DataFrame(peer_detail_rows)
 
     st.session_state['dash_df'] = dash_df
     st.session_state['industry_df'] = industry_df
     st.session_state['weight_table_df'] = weight_table_df
-    st.session_state['peer_breakdown_df'] = peer_breakdown_df
-    st.session_state['global_simple_u_beta'] = global_simple_u_beta
-    st.session_state['global_mc_u_beta'] = global_mc_u_beta
+    st.session_state['calc_breakdown_df'] = calc_breakdown_df
+    st.session_state['peer_detail_df'] = peer_detail_df
     st.session_state['fetched_data'] = fetched_data
     st.session_state['financials_data'] = financials_data
     st.session_state['main_assets'] = main_assets
@@ -666,9 +646,8 @@ if 'ran_analysis' in st.session_state and st.session_state['ran_analysis']:
     dash_df = st.session_state['dash_df']
     industry_df = st.session_state['industry_df']
     weight_table_df = st.session_state['weight_table_df']
-    peer_breakdown_df = st.session_state['peer_breakdown_df']
-    global_simple_u_beta = st.session_state['global_simple_u_beta']
-    global_mc_u_beta = st.session_state['global_mc_u_beta']
+    calc_breakdown_df = st.session_state['calc_breakdown_df']
+    peer_detail_df = st.session_state['peer_detail_df']
     fetched_data = st.session_state['fetched_data']
     financials_data = st.session_state['financials_data']
     main_assets = st.session_state['main_assets']
@@ -682,8 +661,6 @@ if 'ran_analysis' in st.session_state and st.session_state['ran_analysis']:
 
     if show_dash:
         st.divider()
-        
-        # EXCELLENT UI USING TABS
         tab1, tab2, tab3 = st.tabs(["📊 Main Dashboard", "🌐 Industry Beta Scenarios", "📈 Charts & Regressions"])
         
         with tab1:
@@ -697,89 +674,40 @@ if 'ran_analysis' in st.session_state and st.session_state['ran_analysis']:
 
         with tab2:
             st.subheader("Target Relevering based on Industry Averages")
-            
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.info("**Calc 1:** Simple Average Unlevered Beta of ALL companies (Targets + Competitors).")
-            with c2:
-                st.info("**Calc 2:** Market Cap Weighted Average Unlevered Beta of ALL companies.")
-            with c3:
-                st.info("**Calc 3:** Market Cap Weighted Average Unlevered Beta of the *Target's specific competitors* only.")
+            st.dataframe(industry_df.style.format("{:.2f}", subset=['Calc 1: Global Simple Unlevered', 'Calc 1: Target Relevered', 'Calc 2: Global Weighted Unlevered', 'Calc 2: Target Relevered', 'Calc 3: Peer Weighted Unlevered', 'Calc 3: Target Relevered']), use_container_width=True)
 
-            st.dataframe(
-                industry_df.style.format("{:.3f}", subset=industry_df.columns[1:]).background_gradient(cmap='YlGn', axis=None),
-                use_container_width=True, hide_index=True
-            )
+            st.markdown("### Market Cap & Weighted Average Calculations (All Companies)")
+            st.dataframe(weight_table_df.style.format({"Unlevered Beta": "{:.2f}", "Market Cap": "{:,.0f}", "Industry Weight (%)": "{:.2%}"}), use_container_width=True)
 
-            st.markdown("---")
-            st.subheader("Market Cap & Weight Calculations Breakdown")
-            format_weights = {
-                "Unlevered Beta": "{:.3f}",
-                "Market Cap": "{:,.0f}",
-                "Industry Weight (%)": "{:.2%}"
-            }
-            st.dataframe(
-                weight_table_df.style.format(format_weights).background_gradient(cmap='Blues', subset=['Industry Weight (%)']),
-                use_container_width=True, hide_index=True
-            )
+            st.markdown("### Unlevered Beta Calculation Breakdown (By Method)")
+            st.dataframe(calc_breakdown_df.style.format({"Resulting Unlevered Beta": "{:.3f}"}), use_container_width=True)
+
+            st.markdown("### Peer Weighted Unlevered Beta (Calc 3) - Per Target Detail")
+            st.dataframe(peer_detail_df.style.format({"Peer Unlevered Beta": "{:.3f}", "Peer Market Cap": "{:,.0f}", "Peer Weight in Group (%)": "{:.2%}"}), use_container_width=True)
 
         with tab3:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("Cost of Capital Beta Comparison")
-                bar_df = dash_df.melt(id_vars='Asset', value_vars=['Raw Levered Beta', 'Unlevered Beta', 'Peer Relevered Beta'], var_name='Metric', value_name='Beta')
-                fig1 = px.bar(bar_df, x='Asset', y='Beta', color='Metric', barmode='group', text_auto='.2f',
-                              color_discrete_sequence=['#1B365D', '#6CA0DC', '#E67E22'])
-                fig1.update_layout(xaxis_title="", yaxis_title="Beta Value", legend_title="")
-                st.plotly_chart(fig1, use_container_width=True)
-
-            with c2:
-                st.subheader("Asset Correlation Heatmap")
-                returns_df = pd.DataFrame()
-                for sym in main_assets:
-                    if sym in fetched_data:
-                        returns_df[sym] = fetched_data[sym]['Close'].pct_change().fillna(0.0)
-                corr_matrix = returns_df.corr()
-                
-                fig2 = px.imshow(corr_matrix, text_auto='.2f', color_continuous_scale='RdYlGn', aspect="auto")
-                st.plotly_chart(fig2, use_container_width=True)
-
-            st.divider()
-            st.subheader(f"📈 Target Companies Regression Scatter Plots (vs {bench_symbol})")
-            scatter_cols = st.columns(2)
-            idx = 0
-            
+            st.subheader("Visual Regressions")
             for sym in main_assets:
-                if sym in fetched_data and bench_symbol in fetched_data:
-                    target_ret = fetched_data[sym]['Close'].pct_change().fillna(0.0)
-                    b_ret = fetched_data[bench_symbol]['Close'].pct_change().fillna(0.0)
-                    
-                    aligned = pd.concat([target_ret, b_ret], axis=1)
-                    aligned.columns = [sym, bench_symbol]
-                    
-                    m, c_y = np.polyfit(aligned[bench_symbol], aligned[sym], 1)
-                    
-                    fig_scat = px.scatter(aligned, x=bench_symbol, y=sym, opacity=0.6, title=f"{sym} Regression")
-                    fig_scat.add_trace(go.Scatter(
-                        x=aligned[bench_symbol], y=m*aligned[bench_symbol] + c_y, 
-                        mode='lines', name='OLS Trendline', line=dict(color='red')
-                    ))
-                    fig_scat.update_layout(xaxis_title=f"{bench_symbol} Daily Return", yaxis_title=f"{sym} Daily Return")
-                    scatter_cols[idx % 2].plotly_chart(fig_scat, use_container_width=True)
-                    idx += 1
+                if sym in fetched_data:
+                    fig = px.scatter(
+                        x=fetched_data[bench_symbol]['Close'].pct_change().dropna(),
+                        y=fetched_data[sym]['Close'].pct_change().dropna(),
+                        trendline="ols",
+                        labels={"x": f"{bench_symbol} Return", "y": f"{sym} Return"},
+                        title=f"{sym} vs {bench_symbol} Regression"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
     if show_excel:
         st.divider()
-        st.subheader("📥 Excel Export with Native Charts")
+        st.subheader("📥 Download Excel Report")
         excel_bytes = generate_market_excel(
-            fetched_data, financials_data, main_assets, comp_map, bench_symbol,
-            yf_start, yf_end, dash_df, industry_df, weight_table_df,
-            peer_breakdown_df, global_simple_u_beta, global_mc_u_beta
+            fetched_data, financials_data, main_assets, comp_map, benchmark_symbol, 
+            yf_start, yf_end, dash_df, industry_df, weight_table_df, calc_breakdown_df, peer_detail_df
         )
         st.download_button(
-            label="Download Complete Analytical Workbook (.xlsx)",
+            label="Download Complete Excel Workbook (.xlsx)",
             data=excel_bytes,
-            file_name=f"Financial_Model_{yf_start}_to_{yf_end}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
+            file_name=f"Beta_Cost_Of_Capital_Analysis_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
